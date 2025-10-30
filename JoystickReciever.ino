@@ -5,82 +5,39 @@ const char* ssid = "ARMORED_NET";
 const char* password = "12345678";
 
 WiFiUDP udp;
+const char* receiverIP = "192.168.4.2";
 const int udpPort = 4210;
 
-const int LEFT_IN1 = 5;
-const int LEFT_IN2 = 6;
-const int LEFT_PWM = 7;
-
-const int RIGHT_IN1 = 8;
-const int RIGHT_IN2 = 9;
-const int RIGHT_PWM = 10;
-
-int clamp(int val, int minVal, int maxVal) {
-  return val < minVal ? minVal : (val > maxVal ? maxVal : val);
-}
-
+const int joy1X = 0;
+const int joy1Y = 1;
+const int joy2X = 2;
+const int joy2Y = 3;
 
 void setup() {
   Serial.begin(115200);
+  pinMode(joy1X, INPUT);
+  pinMode(joy1Y, INPUT);
+  pinMode(joy2X, INPUT);
+  pinMode(joy2Y, INPUT);
 
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password);
-
-  Serial.print("Receiver AP IP: ");
-  Serial.println(WiFi.softAPIP());
-
-  udp.begin(udpPort);
-
-  pinMode(LEFT_IN1, OUTPUT);
-  pinMode(LEFT_IN2, OUTPUT);
-  pinMode(RIGHT_IN1, OUTPUT);
-  pinMode(RIGHT_IN2, OUTPUT);
-  pinMode(LEFT_PWM, OUTPUT);
-  pinMode(RIGHT_PWM, OUTPUT);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) delay(500);
 }
 
 void loop() {
-  int packetSize = udp.parsePacket();
-  if (packetSize) {
-    char buffer[64];
-    int len = udp.read(buffer, sizeof(buffer) - 1);
-    if (len > 0) buffer[len] = '\0';
+  int j1x = analogRead(joy1X);
+  int j1y = analogRead(joy1Y);
+  int j2x = analogRead(joy2X);
+  int j2y = analogRead(joy2Y);
 
-    int j1x, j1y, j2x, j2y;
-    if (sscanf(buffer, "%d,%d,%d,%d", &j1x, &j1y, &j2x, &j2y) == 4) {
-      float forward = (2048 - j1y) / 2048.0;  
-      float rotation = (j2x - 2048) / 2048.0; 
+  char buffer[64];
+  snprintf(buffer, sizeof(buffer), "%d,%d,%d,%d", j1x, j1y, j2x, j2y);
 
-      float leftSpeed = forward - rotation;
-      float rightSpeed = forward + rotation;
+  udp.beginPacket(receiverIP, udpPort);
+  udp.print(buffer);
+  udp.endPacket();
 
-      int leftPWM = clamp((int)(leftSpeed * 255), -255, 255);
-      int rightPWM = clamp((int)(rightSpeed * 255), -255, 255);
-
-      setMotor(LEFT_IN1, LEFT_IN2, LEFT_PWM, leftPWM);
-      setMotor(RIGHT_IN1, RIGHT_IN2, RIGHT_PWM, rightPWM);
-
-      Serial.printf("L=%d  R=%d  (F=%.2f  Rot=%.2f)\n", leftPWM, rightPWM, forward, rotation);
-    }
-  }
-}
-
-void setMotor(int in1, int in2, int pwmPin, int speed) {
-  if (speed > 0) 
-  {
-    digitalWrite(in1, HIGH);
-    digitalWrite(in2, LOW);
-  } 
-  else if (speed < 0) 
-  {
-    digitalWrite(in1, LOW);
-    digitalWrite(in2, HIGH);
-    speed = -speed; 
-  } 
-  else 
-  {
-    digitalWrite(in1, LOW);
-    digitalWrite(in2, LOW);
-  }
-  analogWrite(pwmPin, clamp(speed, 0, 255));
+  Serial.println(buffer);
+  delay(50);
 }
