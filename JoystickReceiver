@@ -1,56 +1,142 @@
+#include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
+#include <esp_now.h>
+#include <ESP32Servo.h>
 
-const char* ssid = "ARMORED_NET";
-const char* password = "12345678";
+const int ENA = 13;
+const int IN1 = 12;
+const int IN2 = 14;
 
-WiFiUDP udp;
-const int udpPort = 4210;
+const int ENB = 27;
+const int IN3 = 26;
+const int IN4 = 25;
 
-const int LEFT_IN1 = 5;
-const int LEFT_IN2 = 6;
-const int LEFT_PWM = 7;
-const int RIGHT_IN1 = 8;
-const int RIGHT_IN2 = 9;
-const int RIGHT_PWM = 10;
+const int PIN_SERVO_L_HIP   = 32;
+const int PIN_SERVO_L_ANKLE = 33;
+const int PIN_SERVO_R_HIP   = 18;
+const int PIN_SERVO_R_ANKLE = 19;
+
+const int HIP_CENTER = 90;
+const int HIP_MAX_TILT = 30;
+const int DEADZONE = 100;
+
+typedef struct {
+  int j1x;
+  int j1y;
+  int j1btn;
+  int j2x;
+  int j2y;
+  int j2btn;
+} joystickData;
+
+joystickData incomingData;
+
+volatile int inputThrottle = 2048; 
+volatile int inputTurn = 2048;     
+
+Servo servoLHip;
+Servo servoLAnkle;
+Servo servoRHip;
+Servo servoRAnkle;
+
+void updateLegGeometry(int tilt);
+void setMotor(int motor, int speed);
+
+void OnDataRecv(const uint8_t *mac, const uint8_t *incomingDataBytes, int len) {
+  memcpy(&incomingData, incomingDataBytes, sizeof(incomingData));
+  inputThrottle = incomingData.j1y;
+  inputTurn     = incomingData.j1x;
+}
 
 void setup() {
   Serial.begin(115200);
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password);
-  udp.begin(udpPort);
 
-  pinMode(LEFT_IN1, OUTPUT); pinMode(LEFT_IN2, OUTPUT); pinMode(RIGHT_IN1, OUTPUT); pinMode(RIGHT_IN2, OUTPUT);
-  pinMode(LEFT_PWM, OUTPUT); pinMode(RIGHT_PWM, OUTPUT);
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+
+  servoLHip.setPeriodHertz(50);
+  servoLHip.attach(PIN_SERVO_L_HIP, 500, 2400);
+
+  servoLAnkle.setPeriodHertz(50);
+  servoLAnkle.attach(PIN_SERVO_L_ANKLE, 500, 2400);
+
+  servoRHip.setPeriodHertz(50);
+  servoRHip.attach(PIN_SERVO_R_HIP, 500, 2400);
+
+  servoRAnkle.setPeriodHertz(50);
+  servoRAnkle.attach(PIN_SERVO_R_ANKLE, 500, 2400);
+
+  updateLegGeometry(0);
+
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != ESP_OK) 
+    return;
+  esp_now_register_recv_cb(OnDataRecv);
 }
 
-void loop() 
-{
-  int packetSize = udp.parsePacket();
-  if (packetSize) {
-    char buffer[64];
-    int len = udp.read(buffer, sizeof(buffer) - 1);
-    if (len > 0) buffer[len] = '\0';
+void loop() {
+  int throttle = map(inputThrottle, 0, 4095, -255, 255);
+  int turn = map(inputTurn, 0, 4095, -255, 255);
 
-    int j1x, j1y, j2x, j2y;
-    if (sscanf(buffer, "%d,%d,%d,%d", &j1x, &j1y, &j2x, &j2y) == 4) {
-      int forward  = ((j1y - 2048) * 255) / 2048;
-      int rotation = ((j2x - 2048) * 255) / 2048;
+  if (abs(throttle) < DEADZONE) throttle = 0;
+  if (abs(turn) < DEADZONE) turn = 0;
 
-      int leftPWM  = constrain(forward - rotation, -255, 255);
-      int rightPWM = constrain(forward + rotation, -255, 255);
+  int leftSpeed = throttle + turn;
+  int rightSpeed = throttle - turn;
 
-      setSpeed(LEFT_IN1, LEFT_IN2, LEFT_PWM, leftPWM);
-      setSpeed(RIGHT_IN1, RIGHT_IN2, RIGHT_PWM, rightPWM);
+  leftSpeed = constrain(leftSpeed, -255, 255);
+  rightSpeed = constrain(rightSpeed, -255, 255);
 
-      Serial.printf("L=%d  R=%d  (F=%d  Rot=%d)\n", leftPWM, rightPWM, forward, rotation);
-    }
+  setMotor(1, leftSpeed);
+  setMotor(2, rightSpeed);
+
+  int tiltAngle = map(turn, -255, 255, -HIP_MAX_TILT, HIP_MAX_TILT);
+  updateLegGeometry(tiltAngle);
+
+  delay(10);
+}
+
+void updateLegGeometry(int tilt) {
+  int leftTarget = HIP_CENTER + tilt;
+  int rightTarget = HIP_CENTER - tilt; 
+
+  servoLHip.write(leftTarget);
+  servoLAnkle.write(180 - leftTarget); 
+
+  servoRHip.write(rightTarget);
+  servoRAnkle.write(180 - rightTarget);
+}
+
+void setMotor(int motor, int speed) {
+  int pwmPin, inA, inB;
+
+  if (motor == 1) 
+    pwmPin = ENA; inA = IN1; inB = IN2;
+  else 
+    pwmPin = ENB; inA = IN3; inB = IN4;
+
+  if (speed > 0) {
+    digitalWrite(inA, HIGH);
+    digitalWrite(inB, LOW);
+    analogWrite(pwmPin, speed);
   }
-}
-
-void setSpeed(int in1, int in2, int pwmPin, int speed) {
-  if (speed > 0) { digitalWrite(in1, HIGH); digitalWrite(in2, LOW); }
-  else if (speed < 0) { digitalWrite(in1, LOW); digitalWrite(in2, HIGH); speed = -speed; }
-  else { digitalWrite(in1, LOW); digitalWrite(in2, LOW); }
-  analogWrite(pwmPin, constrain(speed, 0, 255));
+  else if (speed < 0) {
+    digitalWrite(inA, LOW);
+    digitalWrite(inB, HIGH);
+    analogWrite(pwmPin, abs(speed));
+  } 
+  else {
+    digitalWrite(inA, LOW);
+    digitalWrite(inB, LOW);
+    analogWrite(pwmPin, 0);
+  }
 }
