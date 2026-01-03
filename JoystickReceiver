@@ -23,10 +23,8 @@ const int DEADZONE = 100;
 typedef struct {
   int j1x;
   int j1y;
-  int j1btn;
   int j2x;
   int j2y;
-  int j2btn;
 } joystickData;
 
 joystickData incomingData;
